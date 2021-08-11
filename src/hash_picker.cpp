@@ -297,20 +297,6 @@ bool validate_hash_request(hash_request const& hr, file_storage const& fs)
 
 		TORRENT_ASSERT(uncle_hashes.size() == num_uncle_hashes);
 
-		aux::vector<sha256_hash> tree(merkle_num_nodes(leaf_count));
-		std::copy(hashes.begin(), hashes.end(), tree.end() - leaf_count);
-
-		// the end of a file is a special case, we may need to pad the leaf layer
-		if (req.base == m_piece_layer && leaf_count != req.count)
-		{
-			sha256_hash const pad_hash = merkle_pad(
-				m_files.piece_length() / default_block_size, 1);
-			for (int i = req.count; i < leaf_count; ++i)
-				tree[tree.end_index() - leaf_count + i] = pad_hash;
-		}
-
-		merkle_fill_tree(tree, leaf_count);
-
 		int const base_layer_idx = file_num_layers(req.file) - req.base;
 
 		if (base_layer_idx <= 0)
@@ -320,26 +306,17 @@ bool validate_hash_request(hash_request const& hr, file_storage const& fs)
 
 		auto& dst_tree = m_merkle_trees[req.file];
 		int const dest_start_idx = merkle_to_flat_index(base_layer_idx, req.index);
-		auto hash_failed = dst_tree.add_hashes(dest_start_idx, tree, uncle_hashes);
+		auto const file_piece_offset = m_files.piece_index_at_file(req.file) - piece_index_t{0};
+		auto results = dst_tree.add_hashes(dest_start_idx, file_piece_offset, hashes, uncle_hashes);
 
-		if (!hash_failed)
+		if (!results)
 			return add_hashes_result(false);
 
-		ret.hash_failed = std::move(*hash_failed);
+		ret.hash_failed = std::move(results->failed);
+		ret.hash_passed = std::move(results->passed);
 
 		if (req.base == 0)
-		{
 			std::fill_n(m_hash_verified[req.file].begin() + req.index, unpadded_count, true);
-			// TODO: add passing pieces to ret.hash_passed
-		}
-		else
-		{
-			TORRENT_ASSERT(req.base == m_piece_layer);
-			int const file_piece_offset = int(m_files.file_offset(req.file) / m_files.piece_length());
-
-			ret.hash_passed = dst_tree.check_pieces(req.base, req.index
-				, file_piece_offset, hashes);
-		}
 
 #if TORRENT_USE_INVARIANT_CHECKS
 		check_invariant(req.file);
@@ -353,6 +330,12 @@ bool validate_hash_request(hash_request const& hr, file_storage const& fs)
 	{
 		TORRENT_ASSERT(offset >= 0);
 		auto const f = m_files.file_index_at_piece(piece);
+
+		if (m_files.pad_file_at(f))
+		{
+			return { 0, 0 };
+		}
+
 		auto& merkle_tree = m_merkle_trees[f];
 		piece_index_t const file_first_piece = m_files.piece_index_at_file(f);
 		std::int64_t const block_offset = static_cast<int>(piece) * std::int64_t(m_files.piece_length())
@@ -360,12 +343,6 @@ bool validate_hash_request(hash_request const& hr, file_storage const& fs)
 		int const block_index = aux::numeric_cast<int>(block_offset / default_block_size);
 		int const first_block_index = m_files.file_first_block_node(f);
 		int const block_tree_index = first_block_index + block_index;
-
-		if (m_files.pad_file_at(f))
-		{
-			// TODO: verify pad file hashes
-			return { 0, 0 };
-		}
 
 		// if this blocks's hash is already known, check the passed-in hash against it
 		if (m_hash_verified[f][std::size_t(block_index)])
@@ -401,13 +378,7 @@ bool validate_hash_request(hash_request const& hr, file_storage const& fs)
 #if TORRENT_USE_INVARIANT_CHECKS
 			check_invariant(f);
 #endif
-			// If the hash failure was detected within a single piece then report a piece failure
-			// otherwise report unknown. The pieces will be checked once their hashes have been
-			// downloaded.
-			if (leafs_size <= m_files.piece_length() / default_block_size)
-				return set_block_hash_result::piece_hash_failed();
-			else
-				return set_block_hash_result::unknown();
+			return set_block_hash_result::piece_hash_failed();
 		}
 		else
 		{

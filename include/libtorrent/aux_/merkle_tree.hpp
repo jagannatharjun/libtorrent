@@ -50,6 +50,12 @@ POSSIBILITY OF SUCH DAMAGE.
 namespace libtorrent {
 namespace aux {
 
+struct add_hashes_result_t
+{
+	std::vector<piece_index_t> passed;
+	std::vector<piece_index_t> failed;
+};
+
 // represents the merkle tree for files belonging to a torrent.
 // Each file has a root-hash and a "piece layer", i.e. the level in the tree
 // representing whole pieces. Those hashes are likely to be included in .torrent
@@ -109,15 +115,11 @@ struct TORRENT_EXTRA_EXPORT merkle_tree
 	// be valid.
 	// if the hashes are not valid, or the uncle hashes fail validation, nullopt
 	// is returned.
-	boost::optional<std::map<piece_index_t, std::vector<int>>> add_hashes(
+	boost::optional<add_hashes_result_t> add_hashes(
 		int dest_start_idx
-		, span<sha256_hash const> tree
+		, piece_index_t::diff_type file_piece_offset
+		, span<sha256_hash const> hashes
 		, span<sha256_hash const> uncle_hashes);
-
-	// returns the index of the pieces that passed the hash check
-	std::vector<piece_index_t> check_pieces(int base
-		, int index, int file_piece_offset
-		, span<sha256_hash const> hashes);
 
 	aux::vector<sha256_hash> get_piece_layer() const;
 
@@ -140,6 +142,9 @@ private:
 	sha256_hash get_impl(int idx, std::vector<sha256_hash>& scratch_space) const;
 
 	int blocks_per_piece() const { return 1 << m_blocks_per_piece_log; }
+	// the number tree levels per piece. This is 0 if the block layer is also
+	// the piece layer.
+	int piece_levels() const { return m_blocks_per_piece_log; }
 
 	int block_layer_start() const;
 	int piece_layer_start() const;

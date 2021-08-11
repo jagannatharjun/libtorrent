@@ -991,7 +991,8 @@ namespace libtorrent {
 		// for failures detected with v2 hashes the failing blocks(s)
 		// are specified in blocks
 		// *blocks must be sorted in acending order*
-		void piece_failed(piece_index_t index, std::vector<int> blocks = std::vector<int>());
+		void piece_failed(piece_index_t index, std::vector<int> blocks = std::vector<int>()
+			, bool got_hashes = false);
 
 		// this is the handler for hash failure piece synchronization
 		// i.e. resetting the piece

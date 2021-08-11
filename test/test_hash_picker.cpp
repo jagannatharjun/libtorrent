@@ -376,13 +376,7 @@ TORRENT_TEST(bad_block_hash)
 	add_hashes_result result = picker.add_hashes(hash_request(0_file, 0, 0, 512, 10)
 		, hashes);
 	TEST_CHECK(result.valid);
-	TEST_CHECK(result.hash_failed.count(1_piece) == 1);
-	if (result.hash_failed.count(1_piece) == 1)
-	{
-		TEST_CHECK(result.hash_failed[1_piece].size() == 1);
-		if (result.hash_failed[1_piece].size() == 1)
-			TEST_CHECK(result.hash_failed[1_piece][0] == 0);
-	}
+	TEST_CHECK(std::count(result.hash_failed.begin(), result.hash_failed.end(), 1_piece) == 1);
 }
 
 TORRENT_TEST(set_block_hash)

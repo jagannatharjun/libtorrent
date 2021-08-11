@@ -1080,7 +1080,6 @@ namespace libtorrent {
 		std::cerr << "[" << this << "] " << "restore_piece(" << index << ")" << std::endl;
 #endif
 		auto const download_state = m_piece_map[index].download_queue();
-		TORRENT_ASSERT(download_state != piece_pos::piece_open);
 		if (download_state == piece_pos::piece_open) return;
 
 		auto i = find_dl_piece(download_state, index);

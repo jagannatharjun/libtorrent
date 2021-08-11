@@ -84,7 +84,7 @@ namespace libtorrent
 		bool valid;
 		// the vector contains the block indices (within the piece) that failed
 		// the hash check
-		std::map<piece_index_t, std::vector<int>> hash_failed;
+		std::vector<piece_index_t> hash_failed;
 		std::vector<piece_index_t> hash_passed;
 	};
 

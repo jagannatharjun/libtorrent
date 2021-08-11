@@ -2434,7 +2434,9 @@ bool is_downloading_state(int const st)
 			if (torrent_file().info_hashes().has_v1())
 				hash_passed[0] = piece_hash == m_torrent_file->hash_for_piece(piece);
 
-			if (torrent_file().info_hashes().has_v2())
+			// if the v1 hash failed the check, don't add the v2 hashes to the
+			// merkle tree. They are most likely invalid.
+			if (torrent_file().info_hashes().has_v2() && !bool(hash_passed[0] == false))
 			{
 				hash_passed[1] = on_blocks_hashed(piece, block_hashes);
 			}
@@ -4293,7 +4295,11 @@ namespace {
 
 	// blocks may contain the block indices of the blocks that failed (if this is
 	// a v2 torrent).
-	void torrent::piece_failed(piece_index_t const index, std::vector<int> blocks)
+	// if we already had the piece, but we just learned that it failed because
+	// we received the hashes, `got_hashes` is true. There are certain things we
+	// don't do in that case
+	void torrent::piece_failed(piece_index_t const index, std::vector<int> blocks
+		, bool const got_hashes)
 	{
 		// if the last piece fails the peer connection will still
 		// think that it has received all of it until this function
@@ -4328,7 +4334,7 @@ namespace {
 			m_predictive_pieces.erase(it);
 		}
 #endif
-
+/*
 		if (!torrent_file().info_hashes().has_v1() && blocks.empty())
 		{
 			// This is a v2 only torrent so we can definitely get block
@@ -4343,111 +4349,117 @@ namespace {
 			verify_block_hashes(index);
 			return;
 		}
-
-		// increase the total amount of failed bytes
-		if (blocks.empty())
-			add_failed_bytes(m_torrent_file->piece_size(index));
-		else
-			add_failed_bytes(static_cast<int>(blocks.size()) * default_block_size);
+*/
+		// below is just handling with penalizing peers that sent use bad data.
+		// When got_hashes is true, we didn't download the *data*, we downloaded
+		// the *hashes*.
+		if (!got_hashes)
+		{
+			// increase the total amount of failed bytes
+			if (blocks.empty())
+				add_failed_bytes(m_torrent_file->piece_size(index));
+			else
+				add_failed_bytes(static_cast<int>(blocks.size()) * default_block_size);
 
 #ifndef TORRENT_DISABLE_EXTENSIONS
-		for (auto& ext : m_extensions)
-		{
-			ext->on_piece_failed(index);
-		}
+			for (auto& ext : m_extensions)
+			{
+				ext->on_piece_failed(index);
+			}
 #endif
 
-		std::vector<torrent_peer*> const downloaders = m_picker->get_downloaders(index);
+			std::vector<torrent_peer*> const downloaders = m_picker->get_downloaders(index);
 
-		// decrease the trust point of all peers that sent
-		// parts of this piece.
-		// first, build a set of all peers that participated
-		// if we know which blocks failed, just include the peer(s) sending those
-		// blocks
-		std::set<torrent_peer*> const peers = [&]
-		{
-			std::set<torrent_peer*> ret;
-			if (!blocks.empty() && !downloaders.empty())
+			// decrease the trust point of all peers that sent
+			// parts of this piece.
+			// first, build a set of all peers that participated
+			// if we know which blocks failed, just include the peer(s) sending those
+			// blocks
+			std::set<torrent_peer*> const peers = [&]
 			{
-				for (auto const b : blocks) ret.insert(downloaders[std::size_t(b)]);
-			}
-			else
-			{
-				std::copy(downloaders.begin(), downloaders.end(), std::inserter(ret, ret.begin()));
-			}
-			return ret;
-		}();
-
-		// did we receive this piece from a single peer?
-		// if we know exactly which blocks failed the hash, we can also be certain
-		// that all peers in the list sent us bad data
-		bool const known_bad_peer = peers.size() == 1 || !blocks.empty();
-
-		for (auto p : peers)
-		{
-			if (p == nullptr) continue;
-			TORRENT_ASSERT(p->in_use);
-			bool allow_disconnect = true;
-			if (p->connection)
-			{
-				auto* peer = static_cast<peer_connection*>(p->connection);
-				TORRENT_ASSERT(peer->m_in_use == 1337);
-
-				// the peer implementation can ask not to be disconnected.
-				// this is used for web seeds for instance, to instead of
-				// disconnecting, mark the file as not being had.
-				allow_disconnect = peer->received_invalid_data(index, known_bad_peer);
-			}
-
-			if (settings().get_bool(settings_pack::use_parole_mode))
-				p->on_parole = true;
-
-			int hashfails = p->hashfails;
-			int trust_points = p->trust_points;
-
-			// we decrease more than we increase, to keep the
-			// allowed failed/passed ratio low.
-			trust_points -= 2;
-			++hashfails;
-			if (trust_points < -7) trust_points = -7;
-			p->trust_points = trust_points;
-			if (hashfails > 255) hashfails = 255;
-			p->hashfails = std::uint8_t(hashfails);
-
-			// either, we have received too many failed hashes
-			// or this was the only peer that sent us this piece.
-			// if we have failed more than 3 pieces from this peer,
-			// don't trust it regardless.
-			if (p->trust_points <= -7
-				|| (known_bad_peer && allow_disconnect))
-			{
-				// we don't trust this peer anymore
-				// ban it.
-				if (m_ses.alerts().should_post<peer_ban_alert>())
+				std::set<torrent_peer*> ret;
+				if (!blocks.empty() && !downloaders.empty())
 				{
-					peer_id const pid = p->connection
-						? p->connection->pid() : peer_id();
-					m_ses.alerts().emplace_alert<peer_ban_alert>(
-						get_handle(), p->ip(), pid);
+					for (auto const b : blocks) ret.insert(downloaders[std::size_t(b)]);
 				}
+				else
+				{
+					std::copy(downloaders.begin(), downloaders.end(), std::inserter(ret, ret.begin()));
+				}
+				return ret;
+			}();
 
-				// mark the peer as banned
-				ban_peer(p);
-				update_want_peers();
-				inc_stats_counter(counters::banned_for_hash_failure);
+			// did we receive this piece from a single peer?
+			// if we know exactly which blocks failed the hash, we can also be certain
+			// that all peers in the list sent us bad data
+			bool const known_bad_peer = peers.size() == 1 || !blocks.empty();
 
+			for (auto p : peers)
+			{
+				if (p == nullptr) continue;
+				TORRENT_ASSERT(p->in_use);
+				bool allow_disconnect = true;
 				if (p->connection)
 				{
 					auto* peer = static_cast<peer_connection*>(p->connection);
-#ifndef TORRENT_DISABLE_LOGGING
-					if (should_log())
+					TORRENT_ASSERT(peer->m_in_use == 1337);
+
+					// the peer implementation can ask not to be disconnected.
+					// this is used for web seeds for instance, to instead of
+					// disconnecting, mark the file as not being had.
+					allow_disconnect = peer->received_invalid_data(index, known_bad_peer);
+				}
+
+				if (settings().get_bool(settings_pack::use_parole_mode))
+					p->on_parole = true;
+
+				int hashfails = p->hashfails;
+				int trust_points = p->trust_points;
+
+				// we decrease more than we increase, to keep the
+				// allowed failed/passed ratio low.
+				trust_points -= 2;
+				++hashfails;
+				if (trust_points < -7) trust_points = -7;
+				p->trust_points = trust_points;
+				if (hashfails > 255) hashfails = 255;
+				p->hashfails = std::uint8_t(hashfails);
+
+				// either, we have received too many failed hashes
+				// or this was the only peer that sent us this piece.
+				// if we have failed more than 3 pieces from this peer,
+				// don't trust it regardless.
+				if (p->trust_points <= -7
+					|| (known_bad_peer && allow_disconnect))
+				{
+					// we don't trust this peer anymore
+					// ban it.
+					if (m_ses.alerts().should_post<peer_ban_alert>())
 					{
-						debug_log("*** BANNING PEER: \"%s\" Too many corrupt pieces"
-							, print_endpoint(p->ip()).c_str());
+						peer_id const pid = p->connection
+							? p->connection->pid() : peer_id();
+						m_ses.alerts().emplace_alert<peer_ban_alert>(
+							get_handle(), p->ip(), pid);
 					}
-					peer->peer_log(peer_log_alert::info, "BANNING_PEER", "Too many corrupt pieces");
+
+					// mark the peer as banned
+					ban_peer(p);
+					update_want_peers();
+					inc_stats_counter(counters::banned_for_hash_failure);
+
+					if (p->connection)
+					{
+						auto* peer = static_cast<peer_connection*>(p->connection);
+#ifndef TORRENT_DISABLE_LOGGING
+						if (should_log())
+						{
+							debug_log("*** BANNING PEER: \"%s\" Too many corrupt pieces"
+								, print_endpoint(p->ip()).c_str());
+						}
+						peer->peer_log(peer_log_alert::info, "BANNING_PEER", "Too many corrupt pieces");
 #endif
-					peer->disconnect(errors::too_many_corrupt_pieces, operation_t::bittorrent);
+						peer->disconnect(errors::too_many_corrupt_pieces, operation_t::bittorrent);
+					}
 				}
 			}
 		}
@@ -6632,22 +6644,25 @@ namespace {
 	{
 		need_hash_picker();
 		if (!m_hash_picker) return true;
-		add_hashes_result result = m_hash_picker->add_hashes(req, hashes);
+		add_hashes_result const result = m_hash_picker->add_hashes(req, hashes);
 		for (auto& p : result.hash_failed)
 		{
-			if (torrent_file().info_hashes().has_v1() && have_piece(p.first))
+			if (torrent_file().info_hashes().has_v1() && have_piece(p))
 			{
 				set_error(errors::torrent_inconsistent_hashes, torrent_status::error_file_none);
 				pause();
 				return result.valid;
 			}
 
-			TORRENT_ASSERT(!have_piece(p.first));
+			TORRENT_ASSERT(!have_piece(p));
 
 			// the piece may not have been downloaded in this session
 			// it should be open for downloading so nothing needs to be done here
-			if (!m_picker || !m_picker->is_downloading(p.first)) continue;
-			piece_failed(p.first, std::move(p.second));
+			if (!m_picker || !m_picker->is_downloading(p)) continue;
+			// TODO: in the future, reqest block hashes to know exactly which
+			// block failed the hash check
+			std::vector<int> blocks;
+			piece_failed(p, blocks, true);
 		}
 		for (piece_index_t p : result.hash_passed)
 		{
